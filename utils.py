@@ -1,5 +1,4 @@
 # utils.py
-import os
 import random
 import numpy as np
 import torch
@@ -8,7 +7,7 @@ from pycocotools import mask as mask_utils
 
 
 def set_seed(seed):
-    """Sets seed for reproducibility across different libraries."""
+    """Sets seed for reproducibility."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -20,18 +19,18 @@ def set_seed(seed):
 
 
 def decode_maskobj(mask_obj):
-    """Decodes a COCO RLE (Run-Length Encoding) mask object."""
+    """Decodes COCO RLE mask."""
     return mask_utils.decode(mask_obj)
 
 
 def read_maskfile(filepath):
-    """Reads a mask file (image) and returns it as a NumPy array."""
+    """Reads mask file."""
     mask_array = sio.imread(filepath)
     return mask_array
 
 
 def encode_mask(binary_mask):
-    """Encodes a binary mask (NumPy array) to COCO RLE format."""
+    """Encodes binary mask to COCO RLE."""
     arr = np.asfortranarray(binary_mask).astype(np.uint8)
     rle = mask_utils.encode(arr)
     rle['counts'] = rle['counts'].decode('utf-8')
@@ -39,4 +38,5 @@ def encode_mask(binary_mask):
 
 
 def collate_fn(batch):
+    """Custom collate for DataLoader."""
     return tuple(zip(*batch))
