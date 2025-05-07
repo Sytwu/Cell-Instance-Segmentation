@@ -21,6 +21,13 @@ How to execute the code
 ```
 # Training & Inference
 python main.py
+
+# Train with various configs
+# More details pls refer to config.py
+python main.py --model_arch MaskRCNN_ConvNeXt --num_epochs 30 --box_detections_per_img 300
+
+# Inference
+python infer.py
 ```
 My model weights can be downloaded [Here](https://drive.google.com/drive/folders/16eIz4ERbexEAnIVy1WTvpd5Xl0-rQIap?usp=sharing)!
 
