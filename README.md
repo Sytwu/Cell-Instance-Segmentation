@@ -7,7 +7,7 @@ In this task, the dataset is designed for instance segmentation of cells, consis
 \
 In this assignment, only the Mask R-CNN model is allowed; however, it is acceptable to modify its backbone, neck (Region Proposal Network), and head. In my implementation, I use ConvNeXt with pretrained weights as the backbone, and adjust the maximum number of box proposals considered per image to retain more candidate detections during inference.\
 \
-The dataset can be downloaded Here!
+The dataset can be downloaded [Here](https://drive.google.com/file/d/1B0qWNzQZQmfQP7x7o4FDdgb9GvPDoFzI/view)!
 
 ## How to install
 How to install dependences
@@ -22,9 +22,11 @@ How to execute the code
 # Training & Inference
 python main.py
 ```
-My model weights can be downloaded Here!
+My model weights can be downloaded [Here](https://drive.google.com/drive/folders/16eIz4ERbexEAnIVy1WTvpd5Xl0-rQIap?usp=sharing)!
 
 ## Performance snapshot
 A shapshot of the leaderboard
+![image](https://github.com/user-attachments/assets/65960e4d-c5c9-4677-bc36-d9587cd84fde)
+
 \
 Last Update: 2025/05/07 01:35 a.m. (GMT+8)
