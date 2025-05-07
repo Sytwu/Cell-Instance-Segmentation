@@ -1,0 +1,272 @@
+import os
+import re
+import numpy as np
+from PIL import Image
+import torch
+from torch.utils.data import Dataset
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+from pycocotools.coco import COCO
+
+from utils import read_maskfile, encode_mask
+
+def get_transform(train=True):
+    """Returns data augmentation pipeline."""
+    transforms = []
+    if train:
+        transforms.extend([
+            A.HorizontalFlip(p=0.5),
+            A.VerticalFlip(p=0.5),
+            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+            A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=20, val_shift_limit=20, p=0.5),
+            # Add other transforms as needed, e.g., A.Resize, A.ShiftScaleRotate
+        ])
+    # Note: ToTensorV2 should ideally be one of the last transforms
+    transforms.append(ToTensorV2()) # Always convert to tensor
+
+    return A.Compose(
+        transforms,
+        bbox_params=A.BboxParams(format='pascal_voc', label_fields=['category_ids']),
+        additional_targets={'mask': 'mask'} # Ensure masks are transformed along with image and bboxes
+    )
+
+class InstanceSegmentTrainDataset(Dataset):
+    """Dataset for instance segmentation training."""
+    def __init__(self, root_dir, transforms=None):
+        """Initializes dataset."""
+        self.root_dir = root_dir
+        self.transforms = transforms
+        self.samples = []
+
+        # Walk through the root directory to find image and mask pairs
+        for folder in os.listdir(root_dir):
+            folder_path = os.path.join(root_dir, folder)
+            if not os.path.isdir(folder_path):
+                continue
+
+            image_path = os.path.join(folder_path, 'image.tif')
+            # Find all mask files starting with 'class' and ending with '.tif'
+            mask_paths = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.startswith('class') and f.endswith('.tif')]
+
+            # Only add the sample if the image exists and there's at least one mask
+            if os.path.exists(image_path) and mask_paths:
+                self.samples.append((image_path, mask_paths))
+
+        print(f"Found {len(self.samples)} samples in {root_dir}")
+
+
+    def __len__(self):
+        """Returns dataset size."""
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        """Fetches sample at index idx."""
+        image_path, mask_paths = self.samples[idx]
+
+        # Open image and convert to RGB
+        try:
+            image = Image.open(image_path).convert("RGB")
+            image_np = np.array(image)
+        except Exception as e:
+            print(f"Error opening image file {image_path}: {e}")
+            return None, None # Return None for both if image loading fails
+
+        boxes = []
+        labels = []
+        masks = [] # This will store individual mask numpy arrays
+
+        # Process each mask file associated with the image
+        for mask_path in mask_paths:
+            match = re.search(r'class(\d+)\.tif', os.path.basename(mask_path))
+            if not match:
+                print(f"Warning: Mask file {mask_path} does not follow expected naming convention.")
+                continue
+
+            try:
+                label = int(match.group(1))
+                image_mask = read_maskfile(mask_path)
+                if image_mask is None:
+                    continue # Skip if mask reading failed
+
+                # Ensure mask is 2D
+                if image_mask.ndim == 3:
+                     image_mask = image_mask.squeeze(0) # Assuming shape (1, H, W)
+
+                height, width = image_mask.shape
+
+                # Find unique object IDs in the mask (excluding background 0)
+                object_ids = np.unique(image_mask)
+                object_ids = object_ids[object_ids != 0]
+
+                # Process each object instance in the mask
+                for object_id in object_ids:
+                    # Create a binary mask for the current object instance
+                    cur_mask = (image_mask == object_id).astype(np.uint8)
+
+                    # Find bounding box coordinates
+                    pos = np.where(cur_mask)
+                    if len(pos[0]) == 0 or len(pos[1]) == 0:
+                        continue # Skip if the mask is empty
+
+                    xmin = np.min(pos[1])
+                    xmax = np.max(pos[1])
+                    ymin = np.min(pos[0])
+                    ymax = np.max(pos[0])
+
+                    # Validate bounding box
+                    if xmax <= xmin or ymax <= ymin:
+                        print(f"Warning: Invalid bounding box for object {object_id} in mask {mask_path}")
+                        continue
+
+                    box = [xmin, ymin, xmax, ymax]
+                    boxes.append(box)
+                    labels.append(label)
+                    masks.append(cur_mask) # Add the binary mask for this instance
+
+            except Exception as e:
+                print(f"Error processing mask file {mask_path}: {e}")
+                continue # Continue to the next mask file
+
+        image_id_tensor = torch.tensor([idx])
+
+        # Apply transforms if any
+        if self.transforms:
+            # Albumentations expects masks as a list of numpy arrays
+            transform_input = {
+                'image': image_np,
+                'bboxes': boxes,
+                'category_ids': labels,
+                'masks': masks # Pass the list of numpy masks
+            }
+
+            try:
+                transformed = self.transforms(**transform_input)
+                image = transformed['image'] # This will be a tensor due to ToTensorV2
+                boxes = transformed['bboxes'] # This will be a list of transformed bboxes
+                labels = transformed['category_ids'] # This will be a list of transformed labels
+                masks = transformed['masks'] # This will be a list of transformed numpy masks
+            except Exception as e:
+                print(f"Error applying transforms to sample {idx}: {e}")
+                # Optionally, return the original data or None
+                # For now, let's re-raise or handle more gracefully
+                return None, None # Return None if transform fails
+
+
+        # Convert lists to tensors
+        # Convert boxes and labels (which are lists after transform) to tensors
+        boxes_tensor = torch.as_tensor(boxes, dtype=torch.float32) if boxes else torch.zeros((0, 4), dtype=torch.float32)
+        labels_tensor = torch.as_tensor(labels, dtype=torch.int64) if labels else torch.zeros((0,), dtype=torch.int64)
+
+        # --- FIX FOR VALUEERROR ---
+        # Convert the list of transformed numpy masks to a list of tensors, then stack them
+        masks_tensor_list = [torch.as_tensor(mask, dtype=torch.uint8) for mask in masks]
+        # Stack the list of tensors into a single tensor. Handle the case with no masks.
+        # We need height and width for the zero tensor case, which should be the shape of the transformed image.
+        # If image is already a tensor, get shape from it. If not, get from image_np before transform.
+        # Assuming image is a tensor (due to ToTensorV2) with shape (C, H, W)
+        transformed_height, transformed_width = image.shape[1], image.shape[2]
+        masks_tensor = torch.stack(masks_tensor_list) if masks_tensor_list else torch.zeros((0, transformed_height, transformed_width), dtype=torch.uint8)
+        # --- END FIX ---
+
+
+        # Ensure image is float32 and normalized if it was uint8
+        if image.dtype == torch.uint8:
+             image = image.float() / 255.0
+        # Albumentations ToTensorV2 usually handles this, but this is a safeguard
+
+
+        # Create the target dictionary
+        target = {
+            "boxes": boxes_tensor,
+            "labels": labels_tensor,
+            "masks": masks_tensor,
+            "image_id": image_id_tensor,
+            # Calculate area using the bounding boxes
+            "area": (boxes_tensor[:, 3] - boxes_tensor[:, 1]) * (boxes_tensor[:, 2] - boxes_tensor[:, 0]),
+             # iscrowd will be 0 for all instances in this case
+            "iscrowd": torch.zeros((len(boxes_tensor),), dtype=torch.int64)
+        }
+
+        # Filter out instances with zero area after transformation if any
+        # This might be redundant if Albumentations handles it, but good practice
+        # valid_indices = target["area"] > 0
+        # target["boxes"] = target["boxes"][valid_indices]
+        # target["labels"] = target["labels"][valid_indices]
+        # target["masks"] = target["masks"][valid_indices]
+        # target["area"] = target["area"][valid_indices]
+        # target["iscrowd"] = target["iscrowd"][valid_indices]
+
+
+        return image, target
+
+def create_gt_coco(dataset_subset):
+    """Creates COCO ground truth dict from dataset subset."""
+    coco_dict = {
+        "images": [],
+        "annotations": [],
+        "categories": [
+            {"id": 1, "name": "class1"},
+            {"id": 2, "name": "class2"},
+            {"id": 3, "name": "class3"},
+            {"id": 4, "name": "class4"},
+            # Add other categories if needed
+        ]
+    }
+    annotation_id = 1
+
+    # Iterate through the dataset subset to populate the COCO dictionary
+    for idx in range(len(dataset_subset)):
+        # __getitem__ returns image, target
+        image, target = dataset_subset[idx]
+
+        # Skip if __getitem__ returned None (e.g., due to loading error)
+        if image is None or target is None:
+            continue
+
+        image_id = target["image_id"].item()
+        # Get height and width from the image tensor (shape C, H, W)
+        height, width = image.shape[1], image.shape[2]
+
+        # Add image info to COCO dict
+        coco_dict["images"].append({
+            "id": image_id,
+            "width": width,
+            "height": height,
+            # Use a placeholder file name or derive from original path if available
+            "file_name": f"image_{image_id}.tif",
+        })
+
+        # Add annotations for each instance in the target
+        for i in range(len(target["boxes"])):
+            box = target["boxes"][i].tolist()
+            xmin, ymin, xmax, ymax = box
+            # COCO bbox format is [xmin, ymin, width, height]
+            bbox_coco = [xmin, ymin, xmax - xmin, ymax - ymin]
+            category_id = target["labels"][i].item()
+            mask = target["masks"][i].cpu().numpy() # Get the mask as a numpy array
+
+            # Ensure mask is binary (0 or 1)
+            binary_mask = (mask > 0).astype(np.uint8)
+            area = int(np.sum(binary_mask))
+
+            # Skip annotation if area is zero after potential transformations
+            if area == 0:
+                continue
+
+            # Encode mask using RLE format
+            rle = encode_mask(binary_mask)
+
+            # Add annotation info to COCO dict
+            coco_dict["annotations"].append({
+                "id": annotation_id,
+                "image_id": image_id,
+                "category_id": category_id,
+                "bbox": bbox_coco,
+                "segmentation": rle,
+                "area": area,
+                "iscrowd": 0, # Assuming not crowd annotations
+            })
+            annotation_id += 1
+
+    print(f"Created COCO dict with {len(coco_dict['images'])} images and {len(coco_dict['annotations'])} annotations.")
+    return coco_dict

@@ -1,0 +1,23 @@
+{
+    "root_dir": "hw3-data-release/train",
+    "test_dir": "hw3-data-release/test_release",
+    "test_json": "hw3-data-release/test_image_name_to_ids.json",
+    "model_arch": "MaskRCNN",
+    "num_classes": 5,
+    "pretrained": true,
+    "rpn_post_nms_train": 2000,
+    "rpn_post_nms_test": 1000,
+    "box_detections_per_img": 300,
+    "num_epochs": 30,
+    "batch_size": 2,
+    "base_lr": 0.0003,
+    "weight_decay": 1e-05,
+    "seed": 111550159,
+    "valid_split": 0.2,
+    "lr_scheduler": "none",
+    "lr_step_size": 10,
+    "lr_gamma": 0.1,
+    "out_dir_base": "results",
+    "device": null,
+    "out_dir": "results/version6"
+}
